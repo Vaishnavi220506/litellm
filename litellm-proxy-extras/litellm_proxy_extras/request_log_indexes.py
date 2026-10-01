@@ -1,6 +1,6 @@
 """The request-log indexes built after `prisma migrate deploy` instead of by a migration:
-by the migration job, by a serving proxy that ran the migrations itself (in the
-background, once it serves), or by `litellm --build_db_indexes`.
+by the migration job, or by a serving proxy that ran the migrations itself (in the
+background, once it serves).
 
 A migration cannot build them: a plain `CREATE INDEX` blocks spend-log inserts for the
 whole build, and `CREATE INDEX CONCURRENTLY` is refused on a partitioned parent
@@ -63,7 +63,8 @@ _CREATE_INDEX_STATEMENT: Final = re.compile(
 _TABLE_KIND_SQL: Final = "SELECT c.relkind = 'p' AS partitioned FROM pg_class c WHERE c.oid = to_regclass(%s)"
 _CHILDREN_WITHOUT_THE_INDEX_SQL: Final = (
     "SELECT child.relname AS name, n.nspname AS schema, child.relkind = 'p' AS partitioned "
-    "FROM pg_inherits i JOIN pg_class child ON child.oid = i.inhrelid JOIN pg_namespace n ON n.oid = child.relnamespace "
+    "FROM pg_inherits i JOIN pg_class child ON child.oid = i.inhrelid "
+    "JOIN pg_namespace n ON n.oid = child.relnamespace "
     "WHERE i.inhparent = to_regclass(%s) AND NOT EXISTS ("
     "SELECT 1 FROM pg_inherits attached JOIN pg_index x ON x.indexrelid = attached.inhrelid "
     "WHERE attached.inhparent = to_regclass(%s) AND x.indrelid = child.oid) "
@@ -147,7 +148,9 @@ def ensure_request_log_indexes(
 def _under_migration_lock(connection: "psycopg.Connection[tuple[object, ...]]", step: Callable[[], bool]) -> bool:
     with held_migration_lock(connection) as held:
         if not held:
-            logger.info("Another process holds the migration lock, leaving the request-log indexes to the next index build")
+            logger.info(
+                "Another process holds the migration lock, leaving the request-log indexes to the next index build"
+            )
             return False
         return step()
 

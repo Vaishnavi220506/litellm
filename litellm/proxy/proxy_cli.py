@@ -230,17 +230,6 @@ class ProxyInitializationHelpers:
         click.echo(f"LiteLLM: config OK ({model_count} models)")
 
     @staticmethod
-    def _run_db_index_build() -> None:
-        if os.getenv("DATABASE_URL") is None:
-            raise click.UsageError("--build_db_indexes requires DATABASE_URL or the DATABASE_* variables")
-        from litellm.proxy.db.prisma_client import PrismaManager
-
-        if not PrismaManager.build_request_log_indexes():
-            click.echo("LiteLLM: a LiteLLM_SpendLogs index could not be built, see the log above and rerun", err=True)
-            raise click.exceptions.Exit(1)
-        click.echo("LiteLLM: LiteLLM_SpendLogs indexes are in place")
-
-    @staticmethod
     def _run_test_chat_completion(
         host: str,
         port: int,
@@ -924,12 +913,6 @@ class ProxyInitializationHelpers:
     help="Load and validate the config file (including mcp_servers) without starting the server, then exit. Exit code 1 on any config error.",
 )
 @click.option(
-    "--build_db_indexes",
-    is_flag=True,
-    default=False,
-    help="Build the LiteLLM_SpendLogs indexes online against DATABASE_URL without running migrations or starting the server, then exit. For deployments that run migrations from a serving proxy instead of the migration job. Exit code 1 when an index could not be built.",
-)
-@click.option(
     "--keepalive_timeout",
     default=None,
     type=int,
@@ -1070,7 +1053,6 @@ def run_server(
     use_prisma_db_push: bool,
     skip_server_startup,
     validate_config: bool,
-    build_db_indexes: bool,
     keepalive_timeout,
     timeout_worker_healthcheck,
     max_requests_before_restart,
@@ -1306,10 +1288,6 @@ def run_server(
         if config is None:
             db_connection_pool_limit = LiteLLMDatabaseConnectionPool.database_connection_pool_limit.value
             db_connection_timeout = LiteLLMDatabaseConnectionPool.database_connection_pool_timeout.value
-
-        if build_db_indexes:
-            ProxyInitializationHelpers._run_db_index_build()
-            return
 
         if os.getenv("DATABASE_URL", None) is not None or os.getenv("DIRECT_URL", None) is not None:
             from litellm.proxy.db.db_url_settings import (

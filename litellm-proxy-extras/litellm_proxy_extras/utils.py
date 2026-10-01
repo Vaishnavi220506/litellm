@@ -872,13 +872,17 @@ class ProxyExtrasDBManager:
                     logger.info("Another replica is already rebuilding the invalid indexes, skipping")
                     return False
                 repair_one: Final = repair or ProxyExtrasDBManager._repair_index
-                if not all(
-                    ProxyExtrasDBManager._repair_under_migration_lock(conn, schema, index, repair_one) for index in found
-                ):
+                repaired: Final = all(
+                    ProxyExtrasDBManager._repair_under_migration_lock(conn, schema, index, repair_one)
+                    for index in found
+                )
+                if not repaired:
                     return False
                 remaining: Final = ProxyExtrasDBManager._invalid_litellm_indexes(conn, schema)
         except psycopg.Error as e:
-            logger.warning("Could not check for invalid indexes, will retry on the next database setup run. Error: %s", e)
+            logger.warning(
+                "Could not check for invalid indexes, will retry on the next database setup run. Error: %s", e
+            )
             return False
         return not remaining
 
@@ -1264,7 +1268,9 @@ class ProxyExtrasDBManager:
         database_url: Final = os.environ.get("DATABASE_URL")
         if not database_url:
             return True
-        direct_url: Final = ProxyExtrasDBManager._strip_prisma_query_params(os.environ.get("DIRECT_URL") or database_url)
+        direct_url: Final = ProxyExtrasDBManager._strip_prisma_query_params(
+            os.environ.get("DIRECT_URL") or database_url
+        )
         schema: Final = ProxyExtrasDBManager._prisma_schema_param(database_url) or "public"
         return build(direct_url, schema)
 
@@ -1284,8 +1290,8 @@ class ProxyExtrasDBManager:
     def start_request_log_index_build(build: Callable[[], bool] = build_request_log_indexes) -> threading.Thread:
         """A serving proxy that ran the migrations itself (schema updates not disabled)
         builds the request-log indexes on a daemon thread, so a long build never delays
-        readiness. A build that could not finish is logged and picked up by the next boot,
-        the migration job or `litellm --build_db_indexes`."""
+        readiness. A build that could not finish is logged and picked up by the next boot
+        or the migration job."""
         thread: Final = threading.Thread(target=build, name="litellm-request-log-indexes", daemon=True)
         thread.start()
         return thread

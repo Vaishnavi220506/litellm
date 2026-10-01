@@ -355,30 +355,6 @@ def test_a_serving_proxy_that_runs_the_migrations_itself_builds_both_indexes_aft
         assert_both_indexes_cover_every_partition(database_url)
 
 
-def test_the_cli_build_db_indexes_command_builds_both_indexes_without_migrating(gateway: Gateway, tmp_path: Path) -> None:
-    """`litellm --build_db_indexes` is the hand-run build for a deployment whose serving
-    proxy migrated before this build existed: it builds, migrates nothing and exits 0."""
-    with scratch_database() as database_url:
-        deploy_schema_before_the_index_migrations(database_url, tmp_path)
-        partition_spend_logs(database_url)
-        ledger_before: Final = ledger(database_url)
-        assert CALL_ID_INDEX_MIGRATION not in ledger_before, ledger_before
-        built: Final = subprocess.run(
-            [sys.executable, "-P", "-m", "integration._support.proxy", "--build_db_indexes"],
-            capture_output=True,
-            text=True,
-            timeout=MIGRATION_JOB_SECONDS,
-            cwd=REPO_ROOT,
-            env={**os.environ, "DATABASE_URL": database_url, "LITELLM_MASTER_KEY": gateway.key},
-        )
-        assert built.returncode == 0, built.stdout + built.stderr
-        assert "LiteLLM_SpendLogs indexes are in place" in built.stdout, built.stdout + built.stderr
-        assert ledger(database_url) == ledger_before
-        populated: Final = (*POPULATED_PARTITIONS, DEFAULT_PARTITION)
-        assert attached_partition_indexes(database_url) == expected_attachments(populated)
-        assert parent_index_validity(database_url) == {index: True for index in SPEND_LOGS_INDEXES}
-
-
 def test_the_cli_run_as_a_migration_job_builds_both_indexes_before_it_exits(gateway: Gateway, tmp_path: Path) -> None:
     with scratch_database() as database_url:
         deploy_schema_before_the_index_migrations(database_url, tmp_path)

@@ -3297,51 +3297,6 @@ class TestLibpqSslParamTranslation:
 
 
 @pytest.mark.xdist_group("proxy_cli")
-class TestBuildDbIndexesFlag:
-    """`--build_db_indexes` builds the SpendLogs indexes for a deployment that migrates from
-    its serving proxy, without migrating or starting the server, and exits by the result."""
-
-    @pytest.fixture
-    def database_url(self, monkeypatch):
-        monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
-        monkeypatch.delenv("DIRECT_URL", raising=False)
-
-    @pytest.mark.parametrize(("built", "exit_code"), ((True, 0), (False, 1)), ids=("in-place", "could-not-build"))
-    @patch("uvicorn.run")
-    @patch("litellm.proxy.db.prisma_client.PrismaManager.setup_database")
-    @patch("litellm.proxy.db.prisma_client.PrismaManager.build_request_log_indexes")
-    def test_the_build_result_is_the_exit_code_and_nothing_else_runs(
-        self, mock_build_indexes, mock_setup_database, mock_uvicorn_run, database_url, built, exit_code
-    ):
-        from click.testing import CliRunner
-
-        from litellm.proxy.proxy_cli import run_server
-
-        mock_build_indexes.return_value = built
-
-        result = CliRunner().invoke(run_server, ["--build_db_indexes"])
-
-        assert result.exit_code == exit_code, result.output
-        assert ("indexes are in place" in result.output) is built
-        mock_build_indexes.assert_called_once_with()
-        mock_setup_database.assert_not_called()
-        mock_uvicorn_run.assert_not_called()
-
-    def test_without_a_database_url_it_is_a_usage_error(self, monkeypatch):
-        from click.testing import CliRunner
-
-        from litellm.proxy.proxy_cli import run_server
-
-        for name in ("DATABASE_URL", "DATABASE_HOST", "DATABASE_USERNAME", "DATABASE_PASSWORD", "DATABASE_NAME"):
-            monkeypatch.delenv(name, raising=False)
-
-        result = CliRunner().invoke(run_server, ["--build_db_indexes"])
-
-        assert result.exit_code == 2, result.output
-        assert "--build_db_indexes requires DATABASE_URL" in result.output
-
-
-@pytest.mark.xdist_group("proxy_cli")
 class TestValidateConfigFlag:
     def test_validate_config_valid_config_exits_zero(self, tmp_path, monkeypatch):
         from click.testing import CliRunner

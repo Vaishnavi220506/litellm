@@ -7,7 +7,7 @@ builds the request-log indexes the migrations leave out
 (`litellm_proxy_extras.request_log_indexes`), waiting for them. The job exits
 non-zero when an index could not be built so that it is rerun. A serving proxy
 that runs the migrations itself builds the same indexes in the background once
-it serves, and `litellm --build_db_indexes` builds them on demand.
+it serves.
 
 Env vars:
   DATABASE_URL                  required unless it can be assembled at

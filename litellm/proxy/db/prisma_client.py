@@ -986,10 +986,9 @@ class PrismaManager:
 
     @staticmethod
     def build_request_log_indexes() -> bool:
-        """Build the request-log indexes the migrations leave out and wait for them: the
-        migration job (`--skip_server_startup`) after `setup_database` succeeds, and
-        `--build_db_indexes`. False when an index could not be built, so the caller exits
-        non-zero."""
+        """Build the request-log indexes the migrations leave out and wait for them, for the
+        migration job (`--skip_server_startup`) after `setup_database` succeeds. False when
+        an index could not be built, so the job exits non-zero and is rerun."""
         try:
             from litellm_proxy_extras.utils import ProxyExtrasDBManager
         except ImportError as e:
