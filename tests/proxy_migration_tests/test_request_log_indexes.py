@@ -570,7 +570,7 @@ def test_a_migration_job_that_could_not_build_the_indexes_reports_failure_and_su
 ) -> None:
     """The migration job waits for the build and exits by run_migration_job's result; a job
     that exits 0 with the indexes missing would leave the table unindexed until the next
-    deploy, since the serving proxy it hands over to never builds them."""
+    deploy or until a serving proxy's background build gets to them."""
     with psycopg.connect(scratch_database, autocommit=True) as other_replica:
         other_replica.execute("SELECT pg_advisory_lock(%s)", (MIGRATION_LOCK_KEY,))
         assert _migration_job(use_v2_resolver) is False
@@ -587,8 +587,9 @@ def test_a_migration_job_that_could_not_build_the_indexes_reports_failure_and_su
 def test_the_serving_proxy_setup_applies_the_inert_migrations_and_builds_no_index(
     partitioned_database: str, use_v2_resolver: bool
 ) -> None:
-    """A serving proxy runs setup_database alone: the inert files apply, readiness is not
-    held up by an index build, and the indexes stay as they were until the migration job runs."""
+    """setup_database alone applies the inert files and builds nothing, so a serving proxy's
+    readiness is never held up by an index build; the build it starts afterwards, or the
+    migration job, is what puts the indexes in place."""
     api_key_index_before: Final = _index_validity(partitioned_database, "api_key_startTime_idx")
     assert ProxyExtrasDBManager.setup_database(use_migrate=True, use_v2_resolver=use_v2_resolver) is True
 
@@ -619,7 +620,7 @@ def test_a_role_that_may_not_create_indexes_is_logged_and_left_for_the_next_job_
         with psycopg.connect(scratch_database, autocommit=True) as conn:
             conn.execute("DROP OWNED BY spend_logs_reader")
             conn.execute("DROP ROLE spend_logs_reader")
-    assert "leaving them for the next migration job run" in caplog.text
+    assert "leaving them for the next index build" in caplog.text
     assert _index_validity(scratch_database, "litellm_call_id_idx") == {}
 
 

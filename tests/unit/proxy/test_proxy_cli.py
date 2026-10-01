@@ -2539,10 +2539,10 @@ class TestRunServerDbSetup:
         mock_setup_database.assert_called_once_with(use_migrate=True, use_v2_resolver=False)
 
     @pytest.mark.parametrize(
-        ("arguments", "exits"),
+        ("arguments", "exits", "waits_for_the_build"),
         (
-            (("--local", "--skip_server_startup"), True),
-            (("--local",), False),
+            (("--local", "--skip_server_startup"), True, True),
+            (("--local",), False, False),
         ),
         ids=("migration-job", "serving-proxy"),
     )
@@ -2551,12 +2551,14 @@ class TestRunServerDbSetup:
     @patch("atexit.register")
     @patch("litellm.proxy.db.prisma_client.PrismaManager.setup_database", return_value=True)
     @patch("litellm.proxy.db.prisma_client.PrismaManager.build_request_log_indexes", return_value=False)
+    @patch("litellm.proxy.db.prisma_client.PrismaManager.start_request_log_index_build")
     @patch("litellm.proxy.db.check_migration.check_prisma_schema_diff")
     @patch("litellm.proxy.db.prisma_client.should_update_prisma_schema", return_value=True)
-    def test_only_the_migration_job_builds_the_request_log_indexes(
+    def test_the_migration_job_waits_for_the_index_build_and_a_serving_proxy_starts_it_in_the_background(
         self,
         mock_should_update_schema,
         mock_check_schema_diff,
+        mock_start_build,
         mock_build_indexes,
         mock_setup_database,
         mock_atexit_register,
@@ -2564,10 +2566,11 @@ class TestRunServerDbSetup:
         mock_uvicorn_run,
         arguments,
         exits,
+        waits_for_the_build,
     ):
-        """`--skip_server_startup` is the migration job: it builds the indexes after the
-        migrations and exits 1 when one could not be built. A serving proxy runs the
-        migrations and never builds the indexes, so the same failing build leaves it serving."""
+        """`--skip_server_startup` is the migration job: it waits for the index build after the
+        migrations and exits 1 when one could not be built. A serving proxy that ran the
+        migrations starts the build in the background and serves whatever the build does."""
         from litellm.proxy.proxy_cli import run_server
 
         mock_subprocess_run.return_value = MagicMock(returncode=0)
@@ -2597,6 +2600,52 @@ class TestRunServerDbSetup:
 
         assert (exc_info is not None and exc_info.value.code == 1) is exits
         mock_setup_database.assert_called_once_with(use_migrate=True, use_v2_resolver=True)
+        assert mock_build_indexes.call_count == int(waits_for_the_build)
+        assert mock_start_build.call_count == int(not waits_for_the_build)
+
+    @patch("uvicorn.run")
+    @patch("subprocess.run")
+    @patch("atexit.register")
+    @patch("litellm.proxy.db.prisma_client.PrismaManager.setup_database", return_value=False)
+    @patch("litellm.proxy.db.prisma_client.PrismaManager.start_request_log_index_build")
+    @patch("litellm.proxy.db.check_migration.check_prisma_schema_diff")
+    @patch("litellm.proxy.db.prisma_client.should_update_prisma_schema", return_value=True)
+    def test_a_serving_proxy_whose_migrations_failed_starts_no_index_build(
+        self,
+        mock_should_update_schema,
+        mock_check_schema_diff,
+        mock_start_build,
+        mock_setup_database,
+        mock_atexit_register,
+        mock_subprocess_run,
+        mock_uvicorn_run,
+    ):
+        from litellm.proxy.proxy_cli import run_server
+
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+        mock_proxy_module = MagicMock(
+            app=MagicMock(),
+            ProxyConfig=MagicMock(),
+            KeyManagementSettings=MagicMock(),
+            save_worker_config=MagicMock(),
+        )
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "DIRECT_URL")}
+        clean_env["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
+
+        with (
+            patch.dict(os.environ, clean_env, clear=True),
+            patch.dict(
+                "sys.modules",
+                {"proxy_server": mock_proxy_module, "litellm.proxy.proxy_server": mock_proxy_module},
+            ),
+            patch(
+                "litellm.proxy.proxy_cli.ProxyInitializationHelpers._get_default_unvicorn_init_args"
+            ) as mock_get_args,
+        ):
+            mock_get_args.return_value = {"app": "litellm.proxy.proxy_server:app", "host": "localhost", "port": 8000}
+            run_server.main(["--local"], standalone_mode=False)
+
+        mock_start_build.assert_not_called()
 
 
 # --- Module-level helpers for worker startup hook tests ---
@@ -3285,6 +3334,51 @@ class TestLibpqSslParamTranslation:
         assert query["sslmode"] == ["require"]
         assert query["sslcert"] == ["/certs/rds-bundle.pem"]
         assert query["sslaccept"] == ["strict"]
+
+
+@pytest.mark.xdist_group("proxy_cli")
+class TestBuildDbIndexesFlag:
+    """`--build_db_indexes` builds the SpendLogs indexes for a deployment that migrates from
+    its serving proxy, without migrating or starting the server, and exits by the result."""
+
+    @pytest.fixture
+    def database_url(self, monkeypatch):
+        monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+        monkeypatch.delenv("DIRECT_URL", raising=False)
+
+    @pytest.mark.parametrize(("built", "exit_code"), ((True, 0), (False, 1)), ids=("in-place", "could-not-build"))
+    @patch("uvicorn.run")
+    @patch("litellm.proxy.db.prisma_client.PrismaManager.setup_database")
+    @patch("litellm.proxy.db.prisma_client.PrismaManager.build_request_log_indexes")
+    def test_the_build_result_is_the_exit_code_and_nothing_else_runs(
+        self, mock_build_indexes, mock_setup_database, mock_uvicorn_run, database_url, built, exit_code
+    ):
+        from click.testing import CliRunner
+
+        from litellm.proxy.proxy_cli import run_server
+
+        mock_build_indexes.return_value = built
+
+        result = CliRunner().invoke(run_server, ["--build_db_indexes"])
+
+        assert result.exit_code == exit_code, result.output
+        assert ("indexes are in place" in result.output) is built
+        mock_build_indexes.assert_called_once_with()
+        mock_setup_database.assert_not_called()
+        mock_uvicorn_run.assert_not_called()
+
+    def test_without_a_database_url_it_is_a_usage_error(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from litellm.proxy.proxy_cli import run_server
+
+        for name in ("DATABASE_URL", "DATABASE_HOST", "DATABASE_USERNAME", "DATABASE_PASSWORD", "DATABASE_NAME"):
+            monkeypatch.delenv(name, raising=False)
+
+        result = CliRunner().invoke(run_server, ["--build_db_indexes"])
+
+        assert result.exit_code == 2, result.output
+        assert "--build_db_indexes requires DATABASE_URL" in result.output
 
 
 @pytest.mark.xdist_group("proxy_cli")

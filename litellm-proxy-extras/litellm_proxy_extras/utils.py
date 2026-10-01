@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -1227,9 +1228,10 @@ class ProxyExtrasDBManager:
         Set up the database using either prisma migrate or prisma db push
         Uses migrations from litellm-proxy-extras package
 
-        The request-log indexes in `REQUEST_LOG_INDEXES` are not built here: a serving
-        proxy only applies the migrations and reports readiness. The migration job
-        builds them through `run_migration_job`.
+        The request-log indexes in `REQUEST_LOG_INDEXES` are not built here: the
+        migration job builds them through `run_migration_job`, and a serving proxy that
+        ran the migrations itself starts them through `start_request_log_index_build`
+        once it is ready to serve.
 
         Args:
             use_migrate: Whether to use prisma migrate instead of db push
@@ -1277,6 +1279,16 @@ class ProxyExtrasDBManager:
         built synchronously so the job exits only once they are in place. False when the
         migrations failed or an index could not be built, so the Job is rerun."""
         return setup(use_migrate, use_v2_resolver) and build()
+
+    @staticmethod
+    def start_request_log_index_build(build: Callable[[], bool] = build_request_log_indexes) -> threading.Thread:
+        """A serving proxy that ran the migrations itself (schema updates not disabled)
+        builds the request-log indexes on a daemon thread, so a long build never delays
+        readiness. A build that could not finish is logged and picked up by the next boot,
+        the migration job or `litellm --build_db_indexes`."""
+        thread: Final = threading.Thread(target=build, name="litellm-request-log-indexes", daemon=True)
+        thread.start()
+        return thread
 
     @staticmethod
     def _run_migrations(use_migrate: bool, use_v2_resolver: bool) -> bool:

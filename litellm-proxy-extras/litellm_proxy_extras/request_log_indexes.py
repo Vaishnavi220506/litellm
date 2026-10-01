@@ -1,5 +1,6 @@
-"""The request-log indexes the migration job builds after `prisma migrate deploy`. A
-serving proxy never builds them.
+"""The request-log indexes built after `prisma migrate deploy` instead of by a migration:
+by the migration job, by a serving proxy that ran the migrations itself (in the
+background, once it serves), or by `litellm --build_db_indexes`.
 
 A migration cannot build them: a plain `CREATE INDEX` blocks spend-log inserts for the
 whole build, and `CREATE INDEX CONCURRENTLY` is refused on a partitioned parent
@@ -125,7 +126,7 @@ def ensure_request_log_indexes(
     """Build every listed index that is missing or invalid. Each build step runs under
     the migration coordinator lock, held per statement so a resolver booting on another
     replica gets in between partitions rather than waiting for the whole table. Any
-    failure is logged and left for the next migration job run; the result says whether
+    failure is logged and left for the next index build; the result says whether
     every index ended up valid. Never raises."""
     import psycopg
 
@@ -134,10 +135,10 @@ def ensure_request_log_indexes(
             connection.execute("SET statement_timeout = 0")
             results: Final = tuple(_ensure_index(connection, schema, index) for index in indexes)
     except psycopg.Error as exc:
-        logger.warning("Could not build the request-log indexes, leaving them for the next migration job run: %s", exc)
+        logger.warning("Could not build the request-log indexes, leaving them for the next index build: %s", exc)
         return False
     if not all(results):
-        logger.warning("Some request-log indexes are not in place yet, leaving them for the next migration job run")
+        logger.warning("Some request-log indexes are not in place yet, leaving them for the next index build")
         return False
     logger.info("Request-log indexes are all in place")
     return True
@@ -146,7 +147,7 @@ def ensure_request_log_indexes(
 def _under_migration_lock(connection: "psycopg.Connection[tuple[object, ...]]", step: Callable[[], bool]) -> bool:
     with held_migration_lock(connection) as held:
         if not held:
-            logger.info("Another process holds the migration lock, leaving the request-log indexes to the next migration job run")
+            logger.info("Another process holds the migration lock, leaving the request-log indexes to the next index build")
             return False
         return step()
 
@@ -301,7 +302,7 @@ def _create_parent_index(
                 time.sleep(random.uniform(0.1, 0.5))
     finally:
         connection.execute("SET lock_timeout = 0")
-    logger.warning("Could not get the parent lock on %s to create %s, leaving it for the next migration job run", table, name)
+    logger.warning("Could not get the parent lock on %s to create %s, leaving it for the next index build", table, name)
     return False
 
 

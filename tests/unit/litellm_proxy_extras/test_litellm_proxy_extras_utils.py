@@ -2,7 +2,9 @@ import glob
 import os
 import re
 import sys
+import threading
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -1070,6 +1072,28 @@ class TestBuildRequestLogIndexes:
         assert ProxyExtrasDBManager.build_request_log_indexes(build=build) is True
 
         assert builds == []
+
+
+class TestStartRequestLogIndexBuild:
+    """A serving proxy that ran the migrations starts the index build on a daemon thread
+    and goes on to serve while it runs."""
+
+    def test_the_build_runs_on_a_daemon_thread_that_does_not_hold_up_the_caller(self):
+        release: Final = threading.Event()
+        builds: Final[list[str]] = []  # mutable-ok: the builder thread hands back the thread it ran on
+
+        def build() -> bool:
+            assert release.wait(5), "the caller never came back from start_request_log_index_build"
+            builds.append(threading.current_thread().name)
+            return True
+
+        thread: Final = ProxyExtrasDBManager.start_request_log_index_build(build=build)
+
+        assert builds == [], "the build ran before start_request_log_index_build returned"
+        assert thread.daemon is True
+        release.set()
+        thread.join(5)
+        assert builds == ["litellm-request-log-indexes"]
 
 
 class TestRunMigrationJob:

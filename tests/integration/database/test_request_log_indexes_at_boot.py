@@ -11,7 +11,7 @@ from typing import Final
 
 import psycopg
 import pytest
-from integration._support.client import Gateway
+from integration._support.client import Gateway, eventually
 from integration._support.database import scratch_database
 from integration._support.process import LEGACY_MIGRATE_DEPLOY, MIGRATE_DEPLOY, owned_proxy_process
 from psycopg import sql
@@ -39,7 +39,8 @@ ORIGINAL_MIGRATION_SQL: Final = MappingProxyType(
 )
 MIGRATION_JOB_SECONDS: Final = 300
 INDEXES_IN_PLACE: Final = "Request-log indexes are all in place"
-INDEX_BUILD_LINES: Final = ("Building index", "Attached index", INDEXES_IN_PLACE, "request-log indexes")
+INDEX_BUILD_LINES: Final = ("Building index", "Attached index")
+BUILD_SECONDS: Final = 60
 SPEND_LOGS_INDEXES: Final = ("LiteLLM_SpendLogs_api_key_startTime_idx", "LiteLLM_SpendLogs_litellm_call_id_idx")
 POPULATED_PARTITIONS: Final = MappingProxyType(
     {
@@ -264,16 +265,19 @@ def assert_both_indexes_cover_every_partition(database_url: str) -> None:
     assert attached_partition_indexes(database_url) == expected_attachments((*populated, "LiteLLM_SpendLogs_p2026_10"))
 
 
-def assert_the_serving_proxy_boots_without_building_indexes(
+def assert_the_serving_proxy_boots_and_finds_the_indexes_in_place(
     gateway: Gateway, directory: Path, database_url: str, resolver: Resolver
 ) -> None:
-    """The serving proxy applies the inert files, reports ready, and never touches the indexes."""
+    """The serving proxy applies the inert files, reports ready, and its background build
+    finds every index already there, so it builds nothing and the catalog is untouched."""
     oids: Final = index_oids(database_url)
     with owned_proxy_process(
         gateway, directory, {"DATABASE_URL": database_url}, database_setup=resolver.proxy_flags
     ) as booted:
         assert_ready(booted.gateway)
-        log: Final = booted.log.read_text(errors="replace")
+        log: Final = eventually(
+            lambda: booted.log.read_text(errors="replace"), lambda text: INDEXES_IN_PLACE in text, seconds=BUILD_SECONDS
+        )
     assert ledger(database_url) == {name: True for name in SHIPPED_MIGRATIONS}
     assert not any(line in log for line in INDEX_BUILD_LINES), log[-4000:]
     assert index_oids(database_url) == oids
@@ -290,7 +294,7 @@ def test_the_migration_job_gives_a_partitioned_table_at_the_pre_index_schema_bot
         assert job.returncode == 0, job.stdout + job.stderr
         assert INDEXES_IN_PLACE in job.stderr + job.stdout, job.stdout + job.stderr
         assert_both_indexes_cover_every_partition(database_url)
-        assert_the_serving_proxy_boots_without_building_indexes(gateway, tmp_path, database_url, resolver)
+        assert_the_serving_proxy_boots_and_finds_the_indexes_in_place(gateway, tmp_path, database_url, resolver)
 
 
 @RESOLVERS
@@ -304,7 +308,7 @@ def test_the_migration_job_heals_a_partitioned_table_left_with_the_failed_call_i
         job: Final = migration_job(database_url, resolver)
         assert job.returncode == 0, job.stdout + job.stderr
         assert_both_indexes_cover_every_partition(database_url)
-        assert_the_serving_proxy_boots_without_building_indexes(gateway, tmp_path, database_url, resolver)
+        assert_the_serving_proxy_boots_and_finds_the_indexes_in_place(gateway, tmp_path, database_url, resolver)
 
 
 @RESOLVERS
@@ -323,28 +327,56 @@ def test_the_migration_job_leaves_a_plain_table_that_applied_the_original_index_
         assert "Building index" not in job.stderr + job.stdout, job.stdout + job.stderr
         assert ledger(database_url) == {name: True for name in SHIPPED_MIGRATIONS}
         assert index_oids(database_url) == before
-        assert_the_serving_proxy_boots_without_building_indexes(gateway, tmp_path, database_url, resolver)
+        assert_the_serving_proxy_boots_and_finds_the_indexes_in_place(gateway, tmp_path, database_url, resolver)
 
 
 @RESOLVERS
-def test_a_serving_proxy_alone_applies_the_inert_migrations_and_leaves_the_indexes_to_the_migration_job(
+def test_a_serving_proxy_that_runs_the_migrations_itself_builds_both_indexes_after_it_is_ready(
     gateway: Gateway, tmp_path: Path, resolver: Resolver
 ) -> None:
     """A deployment that runs migrate deploy from the serving proxy and never runs the
-    migration job boots fine and keeps the SpendLogs indexes exactly as the partition
-    script left them (its api_key index, no call_id index) until the job runs."""
+    migration job answers readiness with the inert files applied, then its background build
+    puts both indexes on every partition."""
     with scratch_database() as database_url:
         deploy_schema_before_the_index_migrations(database_url, tmp_path)
         partition_spend_logs(database_url)
-        parents_before: Final = parent_index_validity(database_url)
-        attached_before: Final = attached_partition_indexes(database_url)
-        assert "LiteLLM_SpendLogs_litellm_call_id_idx" not in parents_before, parents_before
-        assert_the_serving_proxy_boots_without_building_indexes(gateway, tmp_path, database_url, resolver)
-        assert parent_index_validity(database_url) == parents_before
-        assert attached_partition_indexes(database_url) == attached_before
-        job: Final = migration_job(database_url, resolver)
-        assert job.returncode == 0, job.stdout + job.stderr
+        assert "LiteLLM_SpendLogs_litellm_call_id_idx" not in parent_index_validity(database_url)
+        with owned_proxy_process(
+            gateway, tmp_path, {"DATABASE_URL": database_url}, database_setup=resolver.proxy_flags
+        ) as booted:
+            assert_ready(booted.gateway)
+            assert ledger(database_url) == {name: True for name in SHIPPED_MIGRATIONS}
+            log: Final = eventually(
+                lambda: booted.log.read_text(errors="replace"),
+                lambda text: INDEXES_IN_PLACE in text,
+                seconds=BUILD_SECONDS,
+            )
+        assert "Building index" in log and "Attached index" in log, log[-4000:]
         assert_both_indexes_cover_every_partition(database_url)
+
+
+def test_the_cli_build_db_indexes_command_builds_both_indexes_without_migrating(gateway: Gateway, tmp_path: Path) -> None:
+    """`litellm --build_db_indexes` is the hand-run build for a deployment whose serving
+    proxy migrated before this build existed: it builds, migrates nothing and exits 0."""
+    with scratch_database() as database_url:
+        deploy_schema_before_the_index_migrations(database_url, tmp_path)
+        partition_spend_logs(database_url)
+        ledger_before: Final = ledger(database_url)
+        assert CALL_ID_INDEX_MIGRATION not in ledger_before, ledger_before
+        built: Final = subprocess.run(
+            [sys.executable, "-P", "-m", "integration._support.proxy", "--build_db_indexes"],
+            capture_output=True,
+            text=True,
+            timeout=MIGRATION_JOB_SECONDS,
+            cwd=REPO_ROOT,
+            env={**os.environ, "DATABASE_URL": database_url, "LITELLM_MASTER_KEY": gateway.key},
+        )
+        assert built.returncode == 0, built.stdout + built.stderr
+        assert "LiteLLM_SpendLogs indexes are in place" in built.stdout, built.stdout + built.stderr
+        assert ledger(database_url) == ledger_before
+        populated: Final = (*POPULATED_PARTITIONS, DEFAULT_PARTITION)
+        assert attached_partition_indexes(database_url) == expected_attachments(populated)
+        assert parent_index_validity(database_url) == {index: True for index in SPEND_LOGS_INDEXES}
 
 
 def test_the_cli_run_as_a_migration_job_builds_both_indexes_before_it_exits(gateway: Gateway, tmp_path: Path) -> None:
