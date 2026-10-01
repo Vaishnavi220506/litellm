@@ -984,6 +984,18 @@ class PrismaManager:
                 os.chdir(original_dir)
         return False
 
+    @staticmethod
+    def build_request_log_indexes() -> bool:
+        """Build the request-log indexes the migrations leave out, for the migration job
+        (`--skip_server_startup`) after `setup_database` succeeds. A serving proxy never
+        calls this. False when an index could not be built, so the job exits non-zero."""
+        try:
+            from litellm_proxy_extras.utils import ProxyExtrasDBManager
+        except ImportError as e:
+            verbose_proxy_logger.error("\x1b[1;31mLiteLLM: Failed to import proxy extras. Got %s\x1b[0m", e)
+            return False
+        return ProxyExtrasDBManager.build_request_log_indexes()
+
 
 def should_update_prisma_schema(
     disable_updates: bool | str | None = None,

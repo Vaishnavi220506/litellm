@@ -1410,9 +1410,12 @@ def run_server(
                             "LiteLLM versions contend for the same DB.\033[0m"
                         )
                     try:
-                        setup_ok: Final = PrismaManager.setup_database(
+                        migrated: Final = PrismaManager.setup_database(
                             use_migrate=not use_prisma_db_push,
                             use_v2_resolver=use_v2_resolver,
+                        )
+                        setup_ok: Final = migrated and (
+                            not skip_server_startup or PrismaManager.build_request_log_indexes()
                         )
                     except RuntimeError as e:
                         # Raised on unrecoverable migration errors: the v2
