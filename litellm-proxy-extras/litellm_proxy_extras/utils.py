@@ -437,12 +437,13 @@ class ProxyExtrasDBManager:
         return False
 
     @staticmethod
-    def _filter_migration_job_owned_drift(diff_sql: str) -> str:
+    def _filter_migration_job_owned_drift(diff_sql: str, partitioned: bool | None = None) -> str:
         """The drift script without the indexes the migration job builds (the schema
         declares them, the migrations deliberately do not) and, when LiteLLM_SpendLogs
         is partitioned, without its primary-key rewrite and partitioning artifacts."""
         without_indexes: Final = filter_request_log_index_diff(diff_sql)
-        if not ProxyExtrasDBManager.spend_logs_is_partitioned():
+        is_partitioned: Final = ProxyExtrasDBManager.spend_logs_is_partitioned() if partitioned is None else partitioned
+        if not is_partitioned:
             return without_indexes
         logger.info(
             "LiteLLM_SpendLogs is partitioned; removed its primary-key "

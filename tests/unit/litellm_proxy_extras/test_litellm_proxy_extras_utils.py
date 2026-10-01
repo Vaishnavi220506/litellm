@@ -1150,16 +1150,18 @@ class TestMigrationJobOwnedDrift:
         'CREATE INDEX "LiteLLM_SpendLogs_api_key_startTime_idx" ON "LiteLLM_SpendLogs"("api_key", "startTime");\n'
     )
 
-    def test_a_plain_spend_logs_table_only_loses_the_migration_job_indexes(self, monkeypatch):
-        monkeypatch.setattr(ProxyExtrasDBManager, "spend_logs_is_partitioned", staticmethod(lambda: False))
-        filtered = ProxyExtrasDBManager._filter_migration_job_owned_drift(_PARTITIONED_DRIFT_SQL + self.JOB_INDEXES)
+    def test_a_plain_spend_logs_table_only_loses_the_migration_job_indexes(self):
+        filtered = ProxyExtrasDBManager._filter_migration_job_owned_drift(
+            _PARTITIONED_DRIFT_SQL + self.JOB_INDEXES, partitioned=False
+        )
         assert "LiteLLM_SpendLogs_litellm_call_id_idx" not in filtered
         assert "LiteLLM_SpendLogs_api_key_startTime_idx" not in filtered
         assert 'PRIMARY KEY ("request_id")' in filtered
 
-    def test_a_partitioned_spend_logs_table_also_loses_its_partitioning_artifacts(self, monkeypatch):
-        monkeypatch.setattr(ProxyExtrasDBManager, "spend_logs_is_partitioned", staticmethod(lambda: True))
-        filtered = ProxyExtrasDBManager._filter_migration_job_owned_drift(_PARTITIONED_DRIFT_SQL + self.JOB_INDEXES)
+    def test_a_partitioned_spend_logs_table_also_loses_its_partitioning_artifacts(self):
+        filtered = ProxyExtrasDBManager._filter_migration_job_owned_drift(
+            _PARTITIONED_DRIFT_SQL + self.JOB_INDEXES, partitioned=True
+        )
         assert "LiteLLM_SpendLogs_litellm_call_id_idx" not in filtered
         assert 'PRIMARY KEY ("request_id")' not in filtered
         assert "LiteLLM_SpendLogs_legacy" not in filtered
