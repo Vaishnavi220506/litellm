@@ -2539,12 +2539,13 @@ class TestRunServerDbSetup:
         mock_setup_database.assert_called_once_with(use_migrate=True, use_v2_resolver=False)
 
     @pytest.mark.parametrize(
-        ("arguments", "exits", "waits_for_the_build"),
+        ("arguments", "migrated", "exits", "waits_for_the_build"),
         (
-            (("--local", "--skip_server_startup"), True, True),
-            (("--local",), False, False),
+            (("--local", "--skip_server_startup"), True, True, True),
+            (("--local",), True, False, False),
+            (("--local",), False, True, False),
         ),
-        ids=("migration-job", "serving-proxy"),
+        ids=("migration-job", "serving-proxy", "serving-proxy-whose-migrations-failed"),
     )
     @patch("uvicorn.run")
     @patch("subprocess.run")
@@ -2565,14 +2566,17 @@ class TestRunServerDbSetup:
         mock_subprocess_run,
         mock_uvicorn_run,
         arguments,
+        migrated,
         exits,
         waits_for_the_build,
     ):
         """`--skip_server_startup` is the migration job: it waits for the index build after the
         migrations and exits 1 when one could not be built. A serving proxy that ran the
-        migrations starts the build in the background and serves whatever the build does."""
+        migrations starts the build in the background and serves whatever the build does; one
+        whose migrations failed exits 1 under `--enforce_prisma_migration_check` and starts no build."""
         from litellm.proxy.proxy_cli import run_server
 
+        mock_setup_database.return_value = migrated
         mock_subprocess_run.return_value = MagicMock(returncode=0)
         mock_proxy_module = MagicMock(
             app=MagicMock(),
@@ -2600,52 +2604,8 @@ class TestRunServerDbSetup:
 
         assert (exc_info is not None and exc_info.value.code == 1) is exits
         mock_setup_database.assert_called_once_with(use_migrate=True, use_v2_resolver=True)
-        assert mock_build_indexes.call_count == int(waits_for_the_build)
-        assert mock_start_build.call_count == int(not waits_for_the_build)
-
-    @patch("uvicorn.run")
-    @patch("subprocess.run")
-    @patch("atexit.register")
-    @patch("litellm.proxy.db.prisma_client.PrismaManager.setup_database", return_value=False)
-    @patch("litellm.proxy.db.prisma_client.PrismaManager.start_request_log_index_build")
-    @patch("litellm.proxy.db.check_migration.check_prisma_schema_diff")
-    @patch("litellm.proxy.db.prisma_client.should_update_prisma_schema", return_value=True)
-    def test_a_serving_proxy_whose_migrations_failed_starts_no_index_build(
-        self,
-        mock_should_update_schema,
-        mock_check_schema_diff,
-        mock_start_build,
-        mock_setup_database,
-        mock_atexit_register,
-        mock_subprocess_run,
-        mock_uvicorn_run,
-    ):
-        from litellm.proxy.proxy_cli import run_server
-
-        mock_subprocess_run.return_value = MagicMock(returncode=0)
-        mock_proxy_module = MagicMock(
-            app=MagicMock(),
-            ProxyConfig=MagicMock(),
-            KeyManagementSettings=MagicMock(),
-            save_worker_config=MagicMock(),
-        )
-        clean_env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "DIRECT_URL")}
-        clean_env["DATABASE_URL"] = "postgresql://test:test@localhost:5432/test"
-
-        with (
-            patch.dict(os.environ, clean_env, clear=True),
-            patch.dict(
-                "sys.modules",
-                {"proxy_server": mock_proxy_module, "litellm.proxy.proxy_server": mock_proxy_module},
-            ),
-            patch(
-                "litellm.proxy.proxy_cli.ProxyInitializationHelpers._get_default_unvicorn_init_args"
-            ) as mock_get_args,
-        ):
-            mock_get_args.return_value = {"app": "litellm.proxy.proxy_server:app", "host": "localhost", "port": 8000}
-            run_server.main(["--local"], standalone_mode=False)
-
-        mock_start_build.assert_not_called()
+        assert mock_build_indexes.call_count == int(migrated and waits_for_the_build)
+        assert mock_start_build.call_count == int(migrated and not waits_for_the_build)
 
 
 # --- Module-level helpers for worker startup hook tests ---
