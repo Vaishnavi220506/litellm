@@ -1001,6 +1001,8 @@ def test_build_sso_user_update_data_keeps_existing_user_alias():
         (CustomOpenID(id="user-1", first_name="Ahmed", last_name="Bilal", team_ids=[]), "Ahmed Bilal"),
         (CustomOpenID(id="user-1", display_name="user-1", first_name="Ahmed", team_ids=[]), "Ahmed"),
         (CustomOpenID(id="user-1", display_name="user-1", team_ids=[]), None),
+        (CustomOpenID(id="user-1", display_name="   ", first_name=" Ahmed ", last_name="Bilal", team_ids=[]), "Ahmed Bilal"),
+        (CustomOpenID(id="user-1", display_name="   ", first_name=" ", team_ids=[]), None),
         ({"id": "user-1", "display_name": "Dict User", "first_name": None, "last_name": None}, "Dict User"),
         (None, None),
     ],

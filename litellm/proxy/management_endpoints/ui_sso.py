@@ -1870,7 +1870,9 @@ def _get_sso_user_alias(result: _SsoUserNames | Mapping[str, object] | None) -> 
         )
     else:
         raw_names = (result.id, result.display_name, result.first_name, result.last_name)
-    user_id, display_name, first_name, last_name = (name if isinstance(name, str) else None for name in raw_names)
+    user_id, display_name, first_name, last_name = (
+        name.strip() or None if isinstance(name, str) else None for name in raw_names
+    )
     if display_name and display_name != user_id:
         return display_name
     return " ".join(part for part in (first_name, last_name) if part) or None
